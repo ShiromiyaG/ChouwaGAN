@@ -1,0 +1,7 @@
+torch>=2.4
+numpy
+scipy
+librosa>=0.10
+soundfile
+tensorboard
+tqdm

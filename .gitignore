@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+logs/
+assets/*
+!assets/logo.png
+datasets/
