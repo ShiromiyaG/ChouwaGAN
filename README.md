@@ -209,6 +209,11 @@ The sections of `configs/<rate>.json`:
   into that turn; an export without it loads with the share near 0.
   `control_interpolation` ("linear" or "cubic") is how the gains go from
   frames to synthesis steps; an export without it renders linear.
+  `source_phase_hz` (remove it to turn it off) gives every harmonic of the
+  harmonic branch from there up a fixed random phase of its own (each bin
+  takes that of the harmonic of f0 nearest to it), faded in over the 1 kHz
+  below, so the generator trains on scattered harmonics; such an export skips
+  the inference diffuser.
 - `discriminator`: periods, MRD resolutions, the envelope bands, the phase head
   resolutions (`phase_*`, from `phase_min_hz` up; remove them to turn it off)
   and `use_san`.
@@ -234,8 +239,9 @@ The output goes through a high-band diffuser: above 4 kHz (faded in from
 harmonic of f0 nearest to it, so every harmonic turns whole and keeps its
 phase as it moves. The pulse train has all its harmonics in phase, which up
 there sounds like static; scattered harmonic phases spread each pulse's top
-over the cycle and leave the harmonics sharp. It runs only at inference: a
-generator trained through it learns steady lines.
+over the cycle and leave the harmonics sharp. It runs only at inference, and
+only for an export without `source_phase_hz`, whose source already scatters
+the harmonics' phases.
 
 | Option          | Default    | |
 |-----------------|------------|-|

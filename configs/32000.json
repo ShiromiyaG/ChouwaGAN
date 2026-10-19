@@ -61,7 +61,8 @@
         "max_phase_spread": 0.0,
         "phase_head_hz": 4000,
         "phase_noise_mix": true,
-        "control_interpolation": "cubic"
+        "control_interpolation": "cubic",
+        "source_phase_hz": 4000.0
     },
     "discriminator": {
         "periods": [

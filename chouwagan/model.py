@@ -25,7 +25,10 @@ harmonic sub-step: no band-wide or random phase made the top sound like a
 voice, while the recording's own phase per bin did. With ``phase_noise_mix``
 it also blends, per bin, the phase of a white noise's spectrogram into that
 turn, as Wavehax's prior carries noise: the network alone is deterministic and
-cannot draw the top's randomness. Both branches are
+cannot draw the top's randomness. With ``source_phase_hz``, every harmonic of
+the harmonic branch from there up keeps a fixed random phase of its own, set
+per bin from the harmonic of f0 nearest to it, so the top is not one click per
+cycle and the gains train on that. Both branches are
 synthesised at ``synthesis_hop`` by overlap-add over blocks of frames, which
 add up to the whole transform exactly and bound the memory of long inputs. No
 upsampling layer and no activation run at the audio rate.
@@ -51,6 +54,9 @@ SPREAD_INIT_BIAS = -4.0
 PHASE_HEAD_RAMP_HZ = 1000.0
 #: Initial logit of the noise phase's share: about 0.25%, nearly none.
 NOISE_MIX_INIT_BIAS = -6.0
+#: Below ``source_phase_hz`` the harmonics' phases fade in over this much.
+SOURCE_PHASE_RAMP_HZ = 1000.0
+SOURCE_PHASE_SEED = 0
 
 
 def continuous_f0(f0):
@@ -153,6 +159,7 @@ def cosine_sum(x, phase, first, last):
     return kernel * torch.cos((first + last) * x / 2 + phase)
 
 
+
 class ConvNeXtBlock(nn.Module):
     def __init__(self, dim, intermediate_dim, kernel_size, layer_scale):
         super().__init__()
@@ -180,7 +187,7 @@ class ChouwaGAN(nn.Module):
                  taper_hz=2000.0, max_jitter=0.02, max_shimmer=0.1, max_f0_correction=20.0, phase="mixed",
                  residual_bound=0.1, block_steps=4096, noise_curve_hz=None, aspiration_regions_hz=None,
                  max_aspiration_sharpness=16.0, contrast_band_edges=None, max_phase_spread=0.0, phase_head_hz=None,
-                 phase_noise_mix=False, control_interpolation="linear"):
+                 phase_noise_mix=False, control_interpolation="linear", source_phase_hz=None):
         super().__init__()
         if phase not in PHASES:
             raise ValueError(f"phase must be one of {PHASES}, not {phase!r}.")
@@ -208,6 +215,15 @@ class ChouwaGAN(nn.Module):
         self.residual_bound = float(residual_bound)
         self.block_steps = int(block_steps)
         self.max_phase_spread = float(max_phase_spread)
+        self.source_phase_hz = None if source_phase_hz is None else float(source_phase_hz)
+        if self.source_phase_hz is not None:
+            generator = torch.Generator().manual_seed(SOURCE_PHASE_SEED)
+            phases = math.pi * (2 * torch.rand(int(sample_rate / 2 / SOURCE_F0_FLOOR) + 2, generator=generator) - 1)
+            bins = torch.linspace(0, sample_rate / 2, self.harmonic_fft // 2 + 1).view(1, -1, 1)
+            ramp = ((bins - self.source_phase_hz) / SOURCE_PHASE_RAMP_HZ + 1).clamp(0, 1)
+            self.register_buffer("source_phases", phases, persistent=False)
+            self.register_buffer("source_bins", bins, persistent=False)
+            self.register_buffer("source_ramp", ramp, persistent=False)
 
         band_hz = band_centers(sample_rate, band_min_hz, band_ratio)
         tract = band_matrix(band_hz, self.harmonic_fft, sample_rate)
@@ -424,6 +440,15 @@ class ChouwaGAN(nn.Module):
         power = coherent.square() + (1 - coherent.square()) * self.spread_rho
         return torch.polar(power.rsqrt(), phase)
 
+    def _source_phase(self, f0):
+        """Unit phasors [B, bins, steps] for ``f0`` [B, 1, steps]: each bin of
+        the harmonic branch turns by the fixed phase of the harmonic of f0
+        nearest to it, so every harmonic turns whole and keeps its phase as it
+        moves; faded in below ``source_phase_hz``."""
+        harmonic = torch.round(self.source_bins / f0).long().clamp(max=len(self.source_phases) - 1)
+        phase = self.source_phases[harmonic] * self.source_ramp
+        return torch.polar(torch.ones_like(phase), phase)
+
     def _noise_phase(self, noise):
         """``(start, end) -> [B, phase_bins, end - start]``: the unit phasors of
         ``noise``'s spectrogram over the harmonic branch's frames, from the
@@ -512,6 +537,10 @@ class ChouwaGAN(nn.Module):
             wobble = to_steps(torch.randn(f0.shape[0], 2, steps, device=f0.device), samples, 1, self.synthesis_hop, 0)
             pitch = pitch * torch.exp2(correction) * (1 + jitter * wobble[:, 0])
             pulse, theta = self._pulse(pitch, gate, shimmer * wobble[:, 1])
+            if self.source_phase_hz is not None:
+                # The pulse's own f0 at each frame centre.
+                centres = (torch.arange(steps, device=pitch.device) * self.synthesis_hop).clamp(max=samples - 1)
+                step_f0 = pitch.detach()[:, centres].clamp(min=SOURCE_F0_FLOOR).unsqueeze(1)
 
             def harmonic_gain(start, end):
                 log_gain = torch.einsum("bcs,cf->bfs", log_tract[..., start:end].to(torch.complex64), self.tract_log)
@@ -536,6 +565,8 @@ class ChouwaGAN(nn.Module):
                         blend = (1 - share) * turn + share * noise_phase(start, end)
                         turn = blend * ((1 - share).square() + share.square()).rsqrt()
                     gain = torch.cat((gain[:, :first], gain[:, first:] * turn), dim=1)
+                if self.source_phase_hz is not None:
+                    gain = gain * self._source_phase(step_f0[..., start:end])
                 return gain
 
             def noise_gain(start, end):

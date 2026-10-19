@@ -59,16 +59,17 @@ class Diffuser(nn.Module):
 
 class Vocoder(nn.Module):
     """An export's generator and its mel settings (``data``), with a
-    ``Diffuser`` on the output when ``diffuse``. ``forward`` takes what the
-    generator does: the normalised mel [B, n_mels, T], f0 [B, T] and,
-    optionally, the contrast input [B, bands + 1, T]."""
+    ``Diffuser`` on the output when ``diffuse`` and the generator does not
+    scatter its harmonics' phases itself (``source_phase_hz``). ``forward``
+    takes what the generator does: the normalised mel [B, n_mels, T], f0 [B, T]
+    and, optionally, the contrast input [B, bands + 1, T]."""
 
     def __init__(self, generator: ChouwaGAN, data: dict, diffuse: bool = True):
         super().__init__()
         self.generator = generator
         self.data = data
         self.diffuser = None
-        if diffuse:
+        if diffuse and generator.source_phase_hz is None:
             self.diffuser = Diffuser(
                 generator.sample_rate, generator.noise_fft, generator.synthesis_hop, generator.hop_length
             )
